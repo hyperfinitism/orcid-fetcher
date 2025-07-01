@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "crates/orcid-works-model",
+    "crates/orcid-works-cli"
+]
+resolver = "2"
