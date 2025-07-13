@@ -29,13 +29,13 @@ cargo build --release
 ### `orcid-works-cli`
 #### Command
 ```bash
-orcid-works-cli --id $ORCID_iD [Options]
+orcid-works-cli --id $ORCID_ID [Options]
 ```
 
 #### Options
 | Flag | Description | Default |
 | :--- | :---------- | :------ |
-| `-i`, `--id` \<String\> | ORCID iD (e.g. `3141-5926-5358-9793`) | *(required)* |
+| `-i`, `--id` \<String\> | ORCID iD (e.g. `0000-0002-1825-0097`) | *(required)* |
 | `-o`, `--out` \<PathBuf\> | Output JSON file path (parent dirs auto-created) | `./output.json` |
 | `--concurrency` \<usize\> | Maximum parallel requests (1-32). Should not exceed rate-limit. | `8` |
 | `--rate-limit` \<u32\> | Requests-per-second cap (1–40). See [Guidelines](#guidelines) section. | `12` |
@@ -53,7 +53,7 @@ orcid-works-cli --id $ORCID_iD [Options]
 #### Example
 ```bash
 orcid-works-cli \
-    --id 3141-5926-5358-9793 \
+    --id "0000-0002-1825-0097" \
     --out ./output.json
 ```
 
