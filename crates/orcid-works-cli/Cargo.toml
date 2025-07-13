@@ -3,16 +3,19 @@ name = "orcid-works-cli"
 version = "0.1.0"
 edition = "2024"
 build   = "build.rs"
+license = "Apache-2.0"
 
 [dependencies]
 orcid-works-model = { path = "../orcid-works-model" }
-anyhow        = "1"
-futures       = "0.3"
-governor = { version = "0.10" }
-serde         = { version = "1", features = ["derive"] }
-serde_json    = "1"
-serde_path_to_error = "0.1"
-rayon         = "1"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+futures = "0.3"
+governor = "0.10"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
-tokio   = { version = "1", features = ["rt-multi-thread", "macros"] }
-clap    = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_path_to_error = "0.1"
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"

@@ -1,37 +1,4 @@
-//! ORCID v3.0 JSON model definitions (Work Summary / Work Detail).
-//!
-//! Exposes strongly‑typed Rust structs for the two public ORCID
-//! endpoints we consume:
-//!
-//! 1. `GET https://pub.orcid.org/v3.0/{orcid}/works`  → [`OrcidWorks`]
-//! 2. `GET https://pub.orcid.org/v3.0/{orcid}/work/{putcode}` → [`OrcidWorkDetail`]
-//!
-//! Additional helper containers:
-//! * [`WorkDetailMap`]   – deterministic `{putcode → detail}` dictionary
-//! * [`OrcidWorkDetailFile`] – `{ records: Vec<OrcidWorkDetail> }` wrapper (on‑disk JSON)
-//!
-//! All structs/enum derive `Serialize` & `Deserialize` so we can (de)serialise
-//! losslessly with `serde_json` while preserving exact ORCID field names.
-//!
-//! SPDX‑License‑Identifier: MIT OR Apache‑2.0
-
-use std::collections::BTreeMap;
-
-use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
-
-// Helper
-pub fn null_to_empty_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
-where
-    D: Deserializer<'de>,
-    T: Deserialize<'de>,
-{
-    Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
-}
-
-/* -------------------------------------------------------------------------
- * Leaf helpers
- * --------------------------------------------------------------------- */
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Value<T> {
@@ -125,10 +92,6 @@ pub struct ContributorAttributes {
     pub contributor_role: Option<String>,
 }
 
-/* -------------------------------------------------------------------------
- * Work summary / detail
- * --------------------------------------------------------------------- */
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExternalIds {
     #[serde(rename = "external-id", skip_serializing_if = "Option::is_none")]
@@ -170,6 +133,7 @@ pub struct Contributors {
     pub contributor: Option<Vec<Contributor>>,
 }
 
+// Response from /{id}/work/{putcode}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OrcidWorkDetail {
     #[serde(flatten)]
@@ -191,10 +155,6 @@ pub struct OrcidWorkDetail {
     pub country: Option<Value<String>>,
 }
 
-/* -------------------------------------------------------------------------
- * /works top-level list
- * --------------------------------------------------------------------- */
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkGroup {
     #[serde(rename = "last-modified-date")]
@@ -205,6 +165,7 @@ pub struct WorkGroup {
     pub work_summary: Vec<OrcidWorkSummary>,
 }
 
+// Response JSON from {BASE}/{id}/works
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OrcidWorks {
     #[serde(rename = "last-modified-date")]
@@ -213,23 +174,16 @@ pub struct OrcidWorks {
     pub path: String,
 }
 
-/* -------------------------------------------------------------------------
- * Convenience containers / helpers
- * --------------------------------------------------------------------- */
-
-/// Deterministic map {putcode → detail} useful for diffing, but not used as on‑disk format.
-pub type WorkDetailMap = BTreeMap<u64, OrcidWorkDetail>;
-
-/// On‑disk JSON wrapper: `{ "records": [ … ] }`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OrcidWorkDetailFile {
-    pub records: Vec<OrcidWorkDetail>,
-}
-
 impl OrcidWorks {
     pub fn from_reader<R: std::io::Read>(reader: R) -> Result<Self, serde_json::Error> {
         serde_json::from_reader(reader)
     }
+}
+
+// On‑disk JSON wrapper: `{ "records": [ ... ] }`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrcidWorkDetailFile {
+    pub records: Vec<OrcidWorkDetail>,
 }
 
 impl OrcidWorkDetail {
@@ -241,13 +195,5 @@ impl OrcidWorkDetail {
 impl OrcidWorkDetailFile {
     pub fn from_reader<R: std::io::Read>(reader: R) -> Result<Self, serde_json::Error> {
         serde_json::from_reader(reader)
-    }
-
-    /// Convert into a deterministic map keyed by `put_code` for comparison.
-    pub fn into_map(self) -> WorkDetailMap {
-        self.records
-            .into_iter()
-            .map(|d| (d.summary.put_code, d))
-            .collect()
     }
 }

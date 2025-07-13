@@ -1,87 +1,78 @@
-//! Thin async wrapper around ORCID public API v3.0.
-//!
-//! Only the **read‑public** endpoints are used, so no authentication token is
-//! required.  Each JSON response is deserialised into types from
-//! `orcid_model`.
-//!
-//! Public functions:
-//! ```
-//! fetch_works(&client, orcid)      -> OrcidWorks
-//! fetch_work_detail(&client, orcid, putcode) -> OrcidWorkDetail
-//! ```
-//!
-//! A single `reqwest::Client` instance should be reused so underlying TLS
-//! connections
-
-use anyhow::Context;
-use serde_path_to_error::Segment;
-use serde_path_to_error::deserialize;
+use anyhow::{Context, Result, bail};
+use reqwest::{
+    Client,
+    header::{ACCEPT, HeaderValue},
+};
+use serde::de::DeserializeOwned;
+use tracing::{Instrument, error, instrument};
 
 use orcid_works_model::{OrcidWorkDetail, OrcidWorks};
 
 const BASE: &str = "https://pub.orcid.org/v3.0";
 const JSON_ACCEPT: &str = "application/json";
 
-/// GET /v3.0/{orcid}/works
-pub async fn fetch_works(client: &reqwest::Client, orcid: &str) -> anyhow::Result<OrcidWorks> {
-    let url = format!("{BASE}/{orcid}/works");
-    let res = client
-        .get(&url)
-        .header(reqwest::header::ACCEPT, JSON_ACCEPT)
-        .send()
-        .await
-        .with_context(|| format!("GET {url}"))?;
-    let status = res.status();
-    if !status.is_success() {
-        anyhow::bail!("ORCID /works returned HTTP {status}");
-    }
-    let bytes = res.bytes().await?;
-    // for debugging purpose
-    let mut de = serde_json::Deserializer::from_slice(&bytes);
-    let works: OrcidWorks = match deserialize(&mut de) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!(
-                "[orcid-fetch] /works parse error at {}: {}",
-                e.path().iter().map(Segment::to_string).collect::<String>(),
-                e
-            );
-            anyhow::bail!(e);
-        }
-    };
-    Ok(works)
+// Build HTTP Client
+pub(crate) fn build_client(ua: &str) -> Result<Client> {
+    let client = Client::builder().user_agent(ua).build()?;
+    Ok(client)
 }
 
-/// GET /v3.0/{orcid}/work/{putcode}
-pub async fn fetch_work_detail(
-    client: &reqwest::Client,
-    orcid: &str,
-    putcode: u64,
-) -> anyhow::Result<OrcidWorkDetail> {
-    let url = format!("{BASE}/{orcid}/work/{putcode}");
+// Get JSON from URL
+#[instrument(name = "get_json", skip_all)]
+async fn get_json<T>(client: &Client, url: &str) -> Result<T>
+where
+    T: DeserializeOwned,
+{
     let res = client
-        .get(&url)
-        .header(reqwest::header::ACCEPT, JSON_ACCEPT)
+        .get(url)
+        .header(ACCEPT, HeaderValue::from_static(JSON_ACCEPT))
         .send()
         .await
         .with_context(|| format!("GET {url}"))?;
-    let status = res.status();
-    if !status.is_success() {
-        anyhow::bail!("ORCID /work/{putcode} returned HTTP {status}");
+
+    if res.error_for_status_ref().is_err() {
+        let status = res.status();
+        let body = res.text().await.unwrap_or_default();
+
+        error!(%status, %url, response_body = %body, "HTTP error");
+        bail!("HTTP {status} while GET {url}: {body}");
     }
-    let bytes = res.bytes().await?;
-    // for debugging purpose
-    let mut de = serde_json::Deserializer::from_slice(&bytes);
-    let detail: OrcidWorkDetail = match deserialize(&mut de) {
-        Ok(v) => v,
+
+    match res.json::<T>().await {
+        Ok(parsed) => Ok(parsed),
+
         Err(e) => {
-            eprintln!(
-                "[orcid-fetch] /work/{putcode} parse error at {}: {}",
-                e.path().iter().map(Segment::to_string).collect::<String>(),
-                e
-            );
-            anyhow::bail!(e);
+            if e.is_decode() {
+                error!(%url, err = %e, "JSON parse failure");
+            } else {
+                error!(%url, err = %e, "response body read failure");
+            }
+            Err(e).with_context(|| format!("parse JSON from {url}"))
         }
-    };
-    Ok(detail)
+    }
+}
+
+// GET /{id}/works
+#[instrument(name = "fetch_works", skip_all)]
+pub async fn fetch_works(client: &reqwest::Client, id: &str) -> Result<OrcidWorks> {
+    let url = format!("{BASE}/{id}/works");
+    get_json::<OrcidWorks>(client, &url)
+        .in_current_span()
+        .await
+        .with_context(|| format!("fetch work summaries for ORCID iD {id}"))
+}
+
+// GET /{id}/work/{putcode}
+#[instrument(name = "fetch_work_detail", skip_all)]
+pub async fn fetch_work_detail(
+    client: &reqwest::Client,
+    id: &str,
+    putcode: u64,
+) -> Result<OrcidWorkDetail> {
+    let url = format!("{BASE}/{id}/work/{putcode}");
+
+    get_json::<OrcidWorkDetail>(client, &url)
+        .in_current_span()
+        .await
+        .with_context(|| format!("fetch work detail of putcode {putcode}"))
 }
