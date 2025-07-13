@@ -1,18 +1,19 @@
 use anyhow::{Context, Result};
 use clap::Parser;
-use futures::stream::{self, StreamExt};
+use futures::stream::{self, StreamExt, TryStreamExt};
 use governor::{Quota, RateLimiter, clock::DefaultClock, state::InMemoryState, state::NotKeyed};
-use orcid_works_model::{OrcidWorkDetail, OrcidWorkDetailFile, OrcidWorkSummary};
-use reqwest::Client;
-use std::fs;
-use std::num::NonZeroU32;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::{collections::HashMap, num::NonZeroU32, path::PathBuf, sync::Arc};
+
+use tracing::{Instrument, info, info_span, warn};
+
+use orcid_works_model::{OrcidWorkDetail, OrcidWorkDetailFile, OrcidWorks};
 
 mod api;
 mod compare;
-use api::{fetch_work_detail, fetch_works};
-use compare::detail_changed;
+mod io;
+use api::{build_client, fetch_work_detail, fetch_works};
+use compare::{added_putcodes, deleted_putcodes, diff_putcodes, kept_putcodes, updated_putcodes};
+use io::{read_work_details_json, write_pretty_json};
 
 // Environment Constants
 const APP_NAME: &str = env!("CARGO_PKG_NAME");
@@ -22,14 +23,31 @@ const REPO_URL: &str = env!("CARGO_REPOSITORY_URL");
 // Parallel fetch with rate limit
 type Limiter = RateLimiter<NotKeyed, InMemoryState, DefaultClock>;
 
-async fn guarded_fetch<T, Fut>(limiter: &Option<Arc<Limiter>>, fut: Fut) -> Result<T, anyhow::Error>
+async fn guarded_fetch<T, F>(l: &Limiter, fut: F) -> Result<T>
 where
-    Fut: std::future::Future<Output = Result<T, anyhow::Error>>,
+    F: Future<Output = Result<T>>,
 {
-    if let Some(l) = limiter {
-        l.until_ready().await;
-    }
+    l.until_ready().await;
     fut.await
+}
+
+// Build User-Agent string
+fn build_user_agent(note: Option<String>) -> String {
+    let base = format!("{APP_NAME}/{APP_VERSION} (+{REPO_URL})");
+    match note {
+        Some(note) if !note.trim().is_empty() => format!("{base}; {note}"),
+        _ => base,
+    }
+}
+
+// usize parser
+fn ranged_usize_parser<const MIN: usize, const MAX: usize>(s: &str) -> Result<usize, String> {
+    let n: usize = s.parse().map_err(|_| "not an integer".to_string())?;
+    if (MIN..=MAX).contains(&n) {
+        Ok(n)
+    } else {
+        Err(format!("{n} is not in {MIN}..={MAX}"))
+    }
 }
 
 // Flags
@@ -42,7 +60,7 @@ where
     after_help = "Disclaimer: This is a third-party tool and not endorsed by ORCID."
 )]
 struct Cli {
-    #[arg(short = 'i', long, help = "ORCID iD (xxxx-xxxx-xxxx-xxxx)")]
+    #[arg(short = 'i', long, help = "ORCID iD (xxxx-xxxx-xxxx-xxxx).")]
     id: String,
 
     #[arg(
@@ -55,8 +73,9 @@ struct Cli {
 
     #[arg(
         long = "concurrency",
-        default_value_t = 10,
-        help = "Maximum parallel requests"
+        default_value_t = 8,
+        value_parser = ranged_usize_parser::<1, 32>,
+        help = "Maximum parallel requests (1–32). Should not exceed rate-limit."
     )]
     concurrency: usize,
 
@@ -73,100 +92,145 @@ struct Cli {
         help = "Extra text appended to the built-in User-Agent string [default: None]"
     )]
     user_agent_note: Option<String>,
-}
 
-fn build_user_agent(note: Option<String>) -> String {
-    let base = format!("{APP_NAME}/{APP_VERSION} (+{REPO_URL})");
-    match note {
-        Some(note) if !note.trim().is_empty() => format!("{base}; {note}"),
-        _ => base,
-    }
+    #[arg(
+        long = "force-fetch",
+        default_value_t = false,
+        help = "Ignore diff and refetch every work-detail entry"
+    )]
+    force_fetch: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli = Cli::parse();
+    tracing_subscriber::fmt().init();
 
-    // HTTP client
-    let ua = build_user_agent(cli.user_agent_note);
-    let client = Arc::new(Client::builder().user_agent(&ua).build()?);
-    let id: Arc<str> = cli.id.clone().into();
-    println!("[{APP_NAME}] {ua}");
-    // Rate limit
-    let limiter: Option<Arc<Limiter>> = Some(Arc::new(Limiter::direct(Quota::per_second(
-        NonZeroU32::new(cli.rate_limit).unwrap(),
-    ))));
-    // Fetch works summary list
-    println!(
-        "[{}] fetch work summaries of ORCID iD {}",
-        APP_NAME, &cli.id
-    );
-    let works = fetch_works(&client, &cli.id)
-        .await
-        .with_context(|| format!("fetch work summaries of {}", cli.id))?;
-
-    // Flatten summaries
-    let summaries: Vec<OrcidWorkSummary> = works
-        .group
-        .iter()
-        .flat_map(|g| g.work_summary.clone())
-        .collect();
-
-    let putcodes: Vec<u64> = summaries.iter().map(|s| s.put_code).collect();
-
-    // 3) Parallel fetch work details
-    println!("[{}] fetch work details of ORCID iD {}", APP_NAME, cli.id);
-    let details_res = stream::iter(putcodes)
-        .map(|pc| {
-            let limiter = limiter.clone();
-            let client = client.clone();
-            let id = id.clone();
-            async move {
-                let fut = fetch_work_detail(&client, &id, pc);
-                guarded_fetch(&limiter, fut).await
-            }
-        })
-        .buffer_unordered(cli.concurrency)
-        .collect::<Vec<_>>()
-        .await;
-
-    let mut details: Vec<OrcidWorkDetail> = Vec::new();
-    for res in details_res {
-        details.push(res?);
+    if let Err(err) = run().await {
+        tracing::error!(err = %err, "fatal error; exiting:");
+        std::process::exit(1);
     }
-    details.sort_by_key(|d| d.summary.put_code);
 
-    // 4) Write JSON ---------------------------------------------------------
-    let detail_file = OrcidWorkDetailFile { records: details };
-    write_if_changed(&cli.out, &detail_file, |p, v| detail_changed(p, v))?;
-
-    println!(
-        "[{}] finished: {} entries → {}",
-        APP_NAME,
-        detail_file.records.len(),
-        cli.out.display()
-    );
     Ok(())
 }
 
-fn write_if_changed<P, T, F>(path: P, value: &T, is_changed: F) -> anyhow::Result<()>
-where
-    P: AsRef<Path>,
-    T: serde::Serialize + serde::de::DeserializeOwned + PartialEq,
-    F: Fn(&Path, &T) -> anyhow::Result<bool>,
-{
-    let path = path.as_ref();
-    if is_changed(path, value)? {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let json = serde_json::to_string_pretty(value)?;
-        let tmp = path.with_extension("tmp");
-        std::fs::write(&tmp, json)?;
-        std::fs::rename(&tmp, path)?;
-        println!("[{}] wrote {}", APP_NAME, path.display());
-    } else {
-        println!("[{}] no changes in {}", APP_NAME, path.display());
+async fn run() -> anyhow::Result<()> {
+    let cli = Cli::parse();
+
+    // Concurrency & Rate Limit check
+    if cli.concurrency > cli.rate_limit.try_into().unwrap() {
+        warn!(
+            concurrency = &cli.concurrency,
+            rate_limit = &cli.rate_limit,
+            "concurrency exceeds rate-limit"
+        );
     }
+
+    // HTTP client
+    let ua = build_user_agent(cli.user_agent_note);
+    let client = build_client(&ua)?;
+    let id: Arc<str> = cli.id.clone().into();
+
+    // Rate limit
+    let limiter: Arc<Limiter> = Arc::new(Limiter::direct(Quota::per_second(
+        NonZeroU32::new(cli.rate_limit).unwrap(),
+    )));
+
+    // Open the existing work details JSON
+    info!(
+        path = &cli.out.display().to_string(),
+        "opening the existing work-details JSON"
+    );
+    let existing: OrcidWorkDetailFile = read_work_details_json(&cli.out).with_context(|| {
+        format!(
+            "open the existing work-details JSON from {}",
+            &cli.out.display()
+        )
+    })?;
+    let existing_map: HashMap<u64, OrcidWorkDetail> = existing
+        .records
+        .into_iter()
+        .map(|d| (d.summary.put_code, d))
+        .collect();
+
+    // Fetch works summaries
+    info!(id = &cli.id, "fetching work summaries");
+    let works: OrcidWorks = fetch_works(&client, &cli.id)
+        .in_current_span()
+        .await
+        .with_context(|| "update cache: fetch work summaries")?;
+
+    // Detect changes
+    let diff_map = diff_putcodes(&existing_map, &works, cli.force_fetch);
+    let added = added_putcodes(&diff_map);
+    let updated = updated_putcodes(&diff_map);
+    let kept = kept_putcodes(&diff_map);
+    let deleted = deleted_putcodes(&diff_map);
+
+    info!(
+        added = added.len(),
+        updated = updated.len(),
+        deleted = deleted.len(),
+        "diff stats"
+    );
+
+    // Exit if no changes detected
+    let to_fetch: Vec<u64> = added.into_iter().chain(updated.into_iter()).collect();
+
+    if to_fetch.len() + deleted.len() == 0 {
+        info!(
+            to_fetch = to_fetch.len(),
+            deleted = deleted.len(),
+            "no changes detected - skip fetch & rewrite"
+        );
+        return Ok(());
+    }
+
+    // Parallel fetch work details
+    info!(id = &cli.id, "fetching work details");
+    let batch_span = info_span!("fetch_work_details_batch",
+                            id    = %*id,
+                            total = to_fetch.len());
+    let fetched: Vec<OrcidWorkDetail> = stream::iter(to_fetch)
+        .map(|pc| {
+            let task_span = info_span!("work_detail_task", %pc);
+            let limiter = limiter.clone();
+            let client = client.clone();
+            let id = id.clone();
+
+            async move {
+                guarded_fetch(
+                    &limiter,
+                    fetch_work_detail(&client, &id, pc).in_current_span(),
+                )
+                .await
+            }
+            .instrument(task_span)
+        })
+        .buffer_unordered(cli.concurrency)
+        .try_collect::<Vec<_>>()
+        .instrument(batch_span)
+        .await
+        .with_context(|| format!("batch fetch for ORCID iD {id}"))?;
+
+    // Merge
+    let mut merged: Vec<OrcidWorkDetail> = kept
+        .into_iter()
+        .filter_map(|pc| existing_map.get(&pc).cloned())
+        .chain(fetched.into_iter())
+        .collect();
+
+    merged.sort_by_key(|d| d.summary.put_code);
+
+    // Write JSON
+    info!(
+        path = cli.out.display().to_string(),
+        "writing work-details JSON"
+    );
+    let out_json = OrcidWorkDetailFile { records: merged };
+    write_pretty_json(&cli.out, &out_json)
+        .with_context(|| format!("write work-details JSON to {}", cli.out.display()))?;
+
+    info!("finished successfully");
+
     Ok(())
 }

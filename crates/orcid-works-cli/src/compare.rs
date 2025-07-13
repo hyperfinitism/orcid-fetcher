@@ -1,31 +1,75 @@
-//! Diff / equality helpers for ORCID JSON artefacts.
+use std::collections::{HashMap, HashSet};
 
-use anyhow::{Context, Result};
-use std::fs::File;
-use std::path::Path;
+use orcid_works_model::{OrcidWorkDetail, OrcidWorks};
 
-use orcid_works_model::OrcidWorkDetailFile;
-
-/// Load a JSON file if it exists; otherwise return `None`.
-fn load_optional<P, T>(path: P) -> Result<Option<T>>
-where
-    P: AsRef<Path>,
-    for<'de> T: serde::Deserialize<'de>,
-{
-    match File::open(&path) {
-        Ok(f) => Ok(Some(serde_json::from_reader(f)?)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e).with_context(|| format!("open {:?}", path.as_ref().display())),
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Diff {
+    Added,
+    Updated,
+    Kept,
+    Deleted,
 }
 
-/* -------------------------------------------------------------------------
- * WorkDetail diff
- * --------------------------------------------------------------------- */
+pub fn diff_putcodes(
+    older: &HashMap<u64, OrcidWorkDetail>,
+    newer: &OrcidWorks,
+    force_fetch: bool,
+) -> HashMap<u64, Diff> {
+    let mut diff = HashMap::new();
 
-/// Compare old vs new WorkDetailFile, ignoring ordering.
-/// Returns `true` if contents differ.
-pub fn detail_changed<P: AsRef<Path>>(path: P, newest: &OrcidWorkDetailFile) -> Result<bool> {
-    let older = load_optional::<_, OrcidWorkDetailFile>(&path)?;
-    Ok(older.map(|v| v.into_map()) != Some(newest.clone().into_map()))
+    let mut seen_old: HashSet<u64> = HashSet::new();
+
+    for g in &newer.group {
+        for s in &g.work_summary {
+            let pc = s.put_code;
+            let newt = s.last_modified_date.value;
+
+            match older.get(&pc) {
+                None => {
+                    diff.insert(pc, Diff::Added);
+                }
+                Some(t) => {
+                    seen_old.insert(pc);
+                    let oldt = t.summary.last_modified_date.value;
+                    if newt > oldt || force_fetch {
+                        diff.insert(pc, Diff::Updated);
+                    } else {
+                        diff.insert(pc, Diff::Kept);
+                    }
+                }
+            }
+        }
+    }
+
+    for &pc in older.keys() {
+        if !seen_old.contains(&pc) {
+            diff.insert(pc, Diff::Deleted);
+        }
+    }
+
+    diff
+}
+
+pub fn added_putcodes(diff: &HashMap<u64, Diff>) -> Vec<u64> {
+    diff.iter()
+        .filter_map(|(&pc, &d)| (d == Diff::Added).then_some(pc))
+        .collect()
+}
+
+pub fn updated_putcodes(diff: &HashMap<u64, Diff>) -> Vec<u64> {
+    diff.iter()
+        .filter_map(|(&pc, &d)| (d == Diff::Updated).then_some(pc))
+        .collect()
+}
+
+pub fn kept_putcodes(diff: &HashMap<u64, Diff>) -> Vec<u64> {
+    diff.iter()
+        .filter_map(|(&pc, &d)| (d == Diff::Kept).then_some(pc))
+        .collect()
+}
+
+pub fn deleted_putcodes(diff: &HashMap<u64, Diff>) -> Vec<u64> {
+    diff.iter()
+        .filter_map(|(&pc, &d)| (d == Diff::Deleted).then_some(pc))
+        .collect()
 }
