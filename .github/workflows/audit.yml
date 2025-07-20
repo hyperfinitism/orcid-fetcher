@@ -1,0 +1,60 @@
+name: Audit
+on:
+  schedule:
+    - cron: '0 3 * * 1'
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audit-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TOOLCHAIN_VER: 1.88.0
+  AUDIT_VER: 0.21.2
+
+jobs:
+  rustsec:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: ${{ env.TOOLCHAIN_VER }}
+          cache: true
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: main-${{ hashFiles('**/Cargo.lock') }}
+          lookup-only: ${{ github.event_name == 'pull_request' }}
+          save-if: ${{ github.event_name != 'pull_request' }}
+      
+      - uses: Swatinem/rust-cache@v2
+        if: github.event_name == 'pull_request'
+        with:
+          key: pr-${{ github.event.pull_request.number }}-${{ hashFiles('**/Cargo.lock') }}
+          save-if: true
+
+      - run: cargo install cargo-audit --locked --version ${{ env.AUDIT_VER }}
+
+      - name: Run cargo audit
+        id: audit
+        shell: bash
+        run: |
+          cargo audit --json > audit.json || echo "AUDIT_FAILED=1" >> $GITHUB_ENV
+
+      - name: Upload audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-audit-${{ github.run_number }}
+          path: audit.json
