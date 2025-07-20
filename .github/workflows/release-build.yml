@@ -1,0 +1,95 @@
+name: Build & Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    tag_name:
+      description: "Tag to create/update release for (e.g. v0.0.0-test)"
+      required: true
+      type: string
+
+env:
+  TOOLCHAIN_VER: 1.88.0
+
+permissions:
+  contents: write
+
+jobs:
+  build-matrix:
+    name: Release build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    env:
+      TAG_NAME: ${{ github.ref_type == 'tag' && github.ref_name || github.event.inputs.tag_name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: linux-x86_64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+
+          - label: macos-x86_64
+            os: macos-13
+            target: x86_64-apple-darwin
+
+          - label: macos-aarch64
+            os: macos-latest
+            target: aarch64-apple-darwin
+
+          - label: windows-x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+    
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: ${{ env.TOOLCHAIN_VER }}
+          cache: true
+          target: ${{ matrix.target }}
+
+      - run: rustup target add ${{ matrix.target }} --toolchain ${{ env.TOOLCHAIN_VER }} || true
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: main-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run cargo build (release)
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package binaries
+        uses: ./.github/actions/package-binaries
+        with:
+          pack: "${{ github.event.repository.name }}"
+          tag: ${{ env.TAG_NAME }}
+          label: ${{ matrix.label }}
+          target: ${{ matrix.target }}
+
+      - name: Upload artefacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.repository.name }}-${{ env.TAG_NAME }}-${{ matrix.label }}
+          path: |
+            pkg/*.tar.gz
+            pkg/*.zip
+
+  create-release-draft:
+    needs: build-matrix
+    runs-on: ubuntu-latest
+    env:
+      TAG_NAME: ${{ github.ref_type == 'tag' && github.ref_name || github.event.inputs.tag_name }}
+    steps:
+      - name: Download artefacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Create release draft
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/**/*.tar.gz, dist/**/*.zip
+          draft: true
+          generate_release_notes: true
+          tag_name: ${{ env.TAG_NAME }}

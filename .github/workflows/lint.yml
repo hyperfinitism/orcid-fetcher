@@ -1,0 +1,57 @@
+name: Lint
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  TOOLCHAIN_VER: 1.88.0
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: ${{ env.TOOLCHAIN_VER }}
+          components: rustfmt
+          cache: true
+      
+      - name: Run cargo fmt
+        run: cargo fmt --all -- --check
+
+  clippy:
+    needs: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: ${{ env.TOOLCHAIN_VER }}
+          components: clippy
+          cache: true
+    
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: main-${{ hashFiles('**/Cargo.lock') }}
+          lookup-only: ${{ github.event_name == 'pull_request' }}
+          save-if: ${{ github.event_name != 'pull_request' }}
+      
+      - uses: Swatinem/rust-cache@v2
+        if: github.event_name == 'pull_request'
+        with:
+          key: pr-${{ github.event.pull_request.number }}-${{ hashFiles('**/Cargo.lock') }}
+          save-if: true
+
+      
+      - name: Run cargo clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings

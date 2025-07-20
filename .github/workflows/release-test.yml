@@ -1,0 +1,50 @@
+name: Test (release)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  TOOLCHAIN_VER: 1.88.0
+
+jobs:
+  test-release:
+    name: Release tests ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+
+          - os: macos-13
+            target: x86_64-apple-darwin
+
+          - os: macos-latest
+            target: aarch64-apple-darwin
+
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with: 
+          toolchain: ${{ env.TOOLCHAIN_VER }}
+          cache: true
+          target: ${{ matrix.target }}
+      
+      - run: rustup target add ${{ matrix.target }} --toolchain ${{ env.TOOLCHAIN_VER }} || true
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: main-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run cargo test (release)
+        run: cargo test --workspace --all-targets --all-features --release
