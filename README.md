@@ -7,21 +7,36 @@ A third-party CLI toolkit for downloading public data from the ORCID API.
 - Safe "fetch-only-when-changed" logic
   - compares existing work-details with the latest summaries and downloads *only* new or updated entries; no file rewrite when unchanged
   - ideal for static hosting (e.g. GitHub Pages)
+- Multi-platform support
 
 (*initial release: Work Details only – more record types will follow*).
 
 ## Installation
-### Dependencies
-- Rust ≥ 1.88
-  ```bash
-  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-  ```
 
-### Build
+### Requirements
+- [Rust (≥ 1.88)](https://www.rust-lang.org/) – needed only if you build from source.
+- [jq (≥ 1.8.1)](https://jqlang.org/) – used by the example scripts in `examples/*`.
+
+### Option 1: Pre-built binaries
+Pre‑built binaries (≥ v0.2.1) are available on the [Releases page](https://github.com/hyperfinitism/orcid-fetcher/releases). The following platforms are currently supported:
+
+| OS      | Arch   | File name pattern |
+| :------ | :----- | :--- |
+| Linux   | x86‑64 | `*-x86_64-unknown-linux-gnu.tar.gz` |
+| macOS   | x86‑64 | `*-x86_64-apple-darwin.tar.gz` |
+| macOS   | ARM64  | `*-aarch64-apple-darwin.tar.gz` |
+| Windows | x86‑64 | `*-x86_64-pc-windows-msvc.zip` |
+
+### Option 2: Build from source
+
 ```bash
+# clone & build
 git clone https://github.com/hyperfinitism/orcid-fetcher
 cd orcid-fetcher
 cargo build --release
+
+# or install straight into ~/.cargo/bin
+cargo install --git https://github.com/hyperfinitism/orcid-fetcher
 ```
 
 ## Usage
@@ -38,7 +53,7 @@ orcid-works-cli --id $ORCID_ID [Options]
 | `-i`, `--id` \<String\> | ORCID iD (e.g. `0000-0002-1825-0097`) | *(required)* |
 | `-o`, `--out` \<PathBuf\> | Output JSON file path (parent dirs auto-created) | `./output.json` |
 | `--concurrency` \<usize\> | Maximum parallel requests (1-32). Should not exceed rate-limit. | `8` |
-| `--rate-limit` \<u32\> | Requests-per-second cap (1–40). See [Guidelines](#guidelines) section. | `12` |
+| `--rate-limit` \<u32\> | Requests-per-second cap (1–40). See also [Guidelines](#guidelines) section. | `12` |
 | `--user-agent-note` \<String\> | Text appended to the built-in User-Agent string | *(none)* |
 | `--force-fetch` | Ignore diff and refetch every work-detail entry | `false` |
 | `-h`, `--help` | Print help | — |
