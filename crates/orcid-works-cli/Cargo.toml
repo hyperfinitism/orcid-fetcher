@@ -1,12 +1,12 @@
 [package]
 name = "orcid-works-cli"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 build   = "build.rs"
 license = "Apache-2.0"
 
 [dependencies]
-orcid-works-model = { path = "../orcid-works-model" , version = "0.2.0" }
+orcid-works-model = { path = "../orcid-works-model" , version = "0.2.1" }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 futures = "0.3"
