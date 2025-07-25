@@ -967,7 +967,7 @@ dependencies = [
 
 [[package]]
 name = "orcid-works-cli"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -986,7 +986,7 @@ dependencies = [
 
 [[package]]
 name = "orcid-works-model"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "serde",
  "serde_json",
